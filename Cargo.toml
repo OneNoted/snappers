@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
+bytemuck = { version = "1.24.0", features = ["derive"] }
 cairo-rs = "0.21.2"
 chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 clap = { version = "4.5.60", features = ["derive"] }
@@ -14,10 +15,13 @@ libwayshot = "0.7.3"
 notify-rust = { version = "4.11.7", default-features = false, features = ["d"] }
 pango = { version = "0.21.3", features = ["v1_44"] }
 pangocairo = "0.21.2"
+pollster = "0.4.0"
+raw-window-handle = "0.6.2"
 serde = { version = "1.0.228", features = ["derive"] }
 smithay-client-toolkit = "0.20.0"
 toml = "0.9.8"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 wayland-client = "0.31.11"
+wgpu = "29.0.0"
 wl-clipboard-rs = "0.9.3"

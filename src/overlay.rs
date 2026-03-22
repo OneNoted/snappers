@@ -1,7 +1,6 @@
 use std::num::NonZeroU32;
 
 use anyhow::{Context, Result};
-use cairo::{Context as CairoContext, Format, ImageSurface};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
@@ -22,22 +21,20 @@ use smithay_client_toolkit::{
             LayerSurfaceConfigure,
         },
     },
-    shm::{Shm, ShmHandler, slot::SlotPool},
+    shm::{Shm, ShmHandler},
 };
 use wayland_client::{
     Connection, QueueHandle,
     globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface, wl_touch},
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface, wl_touch},
 };
 
 use crate::{
     capture::{CaptureOutput, CaptureSnapshot},
     config::{AppConfig, KeyBinding},
     geometry::{Point, Rect, Size},
-    render::{
-        PanelAssets, PixelSurface, build_panel_assets, capture_button_hit, paint_background,
-        paint_masks_and_border, paint_panel,
-    },
+    overlay_renderer::{OverlayRenderer, RendererOutputInit},
+    render::{PanelAssets, PixelSurface, build_panel_assets, capture_button_hit},
     state::{ButtonState, OutputState as ModelOutputState, PointerUpOutcome, SelectionModel},
 };
 
@@ -72,6 +69,7 @@ pub fn select_region(
         panels: build_panel_assets()?,
         overlays: Vec::new(),
         model: None,
+        renderer: None,
         keyboard: None,
         pointer: None,
         touch: None,
@@ -91,6 +89,7 @@ pub fn select_region(
         .collect();
 
     let mut matched = Vec::new();
+    let mut renderer_outputs = Vec::new();
     for capture in &app.snapshot.outputs {
         let Some((wl_output, info)) = known_outputs
             .iter()
@@ -117,12 +116,21 @@ pub fn select_region(
         matched.push(OverlaySurface {
             logical_rect,
             logical_size: size,
+            scale_factor: info.scale_factor.max(1),
             layer,
-            pool: SlotPool::new((size.width * size.height * 4) as usize, &app.shm)
-                .context("failed to create shm pool")?,
+            configured: false,
+        });
+        renderer_outputs.push(RendererOutputInit {
+            wl_surface: matched
+                .last()
+                .expect("overlay surface was just pushed")
+                .layer
+                .wl_surface()
+                .clone(),
+            logical_size: size,
+            scale_factor: info.scale_factor.max(1),
             with_pointer: PixelSurface::from_rgba_image(&capture.screenshot_with_pointer),
             without_pointer: PixelSurface::from_rgba_image(&capture.screenshot_without_pointer),
-            configured: false,
         });
     }
 
@@ -138,6 +146,12 @@ pub fn select_region(
             logical_rect: surface.logical_rect,
         })
         .collect::<Vec<_>>();
+    app.renderer = Some(OverlayRenderer::new(
+        &conn,
+        &app.shm,
+        renderer_outputs,
+        app.panels.clone(),
+    )?);
     app.model = Some(SelectionModel::new(model_outputs, 0, show_pointer));
     app.overlays = matched;
 
@@ -154,10 +168,8 @@ pub fn select_region(
 struct OverlaySurface {
     logical_rect: Rect,
     logical_size: Size,
+    scale_factor: i32,
     layer: LayerSurface,
-    pool: SlotPool,
-    with_pointer: PixelSurface,
-    without_pointer: PixelSurface,
     configured: bool,
 }
 
@@ -169,6 +181,7 @@ struct OverlayApp {
     panels: PanelAssets,
     overlays: Vec<OverlaySurface>,
     model: Option<SelectionModel>,
+    renderer: Option<OverlayRenderer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     pointer: Option<wl_pointer::WlPointer>,
     touch: Option<wl_touch::WlTouch>,
@@ -184,60 +197,8 @@ impl OverlayApp {
         let Some(model) = self.model.as_ref() else {
             return Ok(());
         };
-
-        for (index, overlay) in self.overlays.iter_mut().enumerate() {
-            let width = overlay.logical_size.width.max(1) as u32;
-            let height = overlay.logical_size.height.max(1) as u32;
-            let stride = width as i32 * 4;
-            let (buffer, canvas) = overlay
-                .pool
-                .create_buffer(
-                    width as i32,
-                    height as i32,
-                    stride,
-                    wl_shm::Format::Argb8888,
-                )
-                .context("failed to create overlay buffer")?;
-            let mut surface = ImageSurface::create(Format::ARgb32, width as i32, height as i32)?;
-            {
-                let cr = CairoContext::new(&surface)?;
-
-                let screenshot = if model.show_pointer {
-                    &mut overlay.with_pointer
-                } else {
-                    &mut overlay.without_pointer
-                };
-                paint_background(&cr, screenshot, overlay.logical_size)?;
-                paint_masks_and_border(
-                    &cr,
-                    overlay.logical_size,
-                    model.selection_on_output(index),
-                )?;
-
-                let panel = if model.show_pointer {
-                    &mut self.panels.hide_pointer
-                } else {
-                    &mut self.panels.show_pointer
-                };
-                let _panel_rect =
-                    paint_panel(&cr, panel, overlay.logical_size, model.dragging_selection())?;
-            }
-            surface.flush();
-            {
-                let data = surface.data().context(
-                    "overlay render surface still had live cairo references during shm copy",
-                )?;
-                canvas.copy_from_slice(&data);
-            }
-
-            overlay
-                .layer
-                .wl_surface()
-                .damage_buffer(0, 0, width as i32, height as i32);
-            buffer
-                .attach_to(overlay.layer.wl_surface())
-                .context("failed to attach overlay buffer")?;
-            overlay.layer.commit();
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.draw(model)?;
         }
 
         self.dirty = false;
@@ -404,9 +365,24 @@ impl CompositorHandler for OverlayApp {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_factor: i32,
+        surface: &wl_surface::WlSurface,
+        new_factor: i32,
     ) {
+        if let Some((index, overlay)) = self
+            .overlays
+            .iter_mut()
+            .enumerate()
+            .find(|(_, overlay)| surface == overlay.layer.wl_surface())
+        {
+            overlay.scale_factor = new_factor.max(1);
+            if let Some(renderer) = self.renderer.as_mut() {
+                if let Err(err) =
+                    renderer.resize_output(index, overlay.logical_size, overlay.scale_factor)
+                {
+                    tracing::warn!("failed to resize overlay renderer after scale change: {err:#}");
+                }
+            }
+        }
     }
 
     fn transform_changed(
@@ -489,10 +465,11 @@ impl LayerShellHandler for OverlayApp {
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        if let Some(surface) = self
+        if let Some((index, surface)) = self
             .overlays
             .iter_mut()
-            .find(|surface| &surface.layer == layer)
+            .enumerate()
+            .find(|(_, surface)| &surface.layer == layer)
         {
             let width = NonZeroU32::new(configure.new_size.0)
                 .map_or(surface.logical_size.width as u32, NonZeroU32::get)
@@ -503,6 +480,13 @@ impl LayerShellHandler for OverlayApp {
             surface.logical_size = Size::new(width, height);
             surface.logical_rect.width = width;
             surface.logical_rect.height = height;
+            if let Some(renderer) = self.renderer.as_mut() {
+                if let Err(err) =
+                    renderer.resize_output(index, surface.logical_size, surface.scale_factor)
+                {
+                    tracing::warn!("failed to resize overlay renderer after configure: {err:#}");
+                }
+            }
             surface.configured = true;
             self.dirty = true;
         }

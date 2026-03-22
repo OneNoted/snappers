@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod geometry;
 mod overlay;
+mod overlay_renderer;
 mod render;
 mod save;
 mod state;
