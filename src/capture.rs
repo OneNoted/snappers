@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use image::{DynamicImage, ImageFormat};
 use libwayshot::{
     WayshotConnection,
@@ -77,22 +77,29 @@ impl CaptureBackend {
         name: Option<&str>,
         show_pointer: bool,
     ) -> Result<DynamicImage> {
-        let output = if let Some(name) = name {
-            self.conn
+        if let Some(name) = name {
+            let output = self
+                .conn
                 .get_all_outputs()
                 .iter()
                 .find(|output| output.name == name)
-                .with_context(|| format!("unknown output `{name}`"))?
-        } else {
-            self.conn
-                .get_all_outputs()
-                .first()
-                .context("no outputs are available for capture")?
-        };
+                .with_context(|| format!("unknown output `{name}`"))?;
 
-        self.conn
-            .screenshot_single_output(output, show_pointer)
-            .with_context(|| format!("failed to capture output {}", output.name))
+            return self
+                .conn
+                .screenshot_single_output(output, show_pointer)
+                .with_context(|| format!("failed to capture output {}", output.name));
+        }
+
+        let snapshot = self.snapshot()?;
+        let output = detect_output_under_pointer(&snapshot.outputs).with_context(|| {
+            format!(
+                "failed to determine the current monitor from the pointer; pass `--output` explicitly. Known outputs: {}",
+                self.describe_outputs()
+            )
+        })?;
+
+        Ok(screenshot_variant(output, show_pointer))
     }
 
     pub fn describe_outputs(&self) -> String {
@@ -118,6 +125,53 @@ pub fn encode_png(image: &DynamicImage) -> Result<Vec<u8>> {
         .write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Png)
         .context("failed to encode screenshot as png")?;
     Ok(bytes)
+}
+
+fn detect_output_under_pointer(outputs: &[CaptureOutput]) -> Result<&CaptureOutput> {
+    let changed_outputs = outputs
+        .iter()
+        .filter(|output| output_changed_when_pointer_toggled(output))
+        .collect::<Vec<_>>();
+
+    match changed_outputs.as_slice() {
+        [output] => Ok(*output),
+        [] => bail!(
+            "could not determine which monitor contains the pointer because all output captures were identical; pass `--output` explicitly"
+        ),
+        outputs => {
+            let names = outputs
+                .iter()
+                .map(|output| output.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "could not determine which monitor contains the pointer because multiple outputs changed when toggling the cursor: {names}; pass `--output` explicitly"
+            )
+        }
+    }
+}
+
+fn output_changed_when_pointer_toggled(output: &CaptureOutput) -> bool {
+    images_differ(
+        &output.screenshot_with_pointer,
+        &output.screenshot_without_pointer,
+    )
+}
+
+fn images_differ(with_pointer: &DynamicImage, without_pointer: &DynamicImage) -> bool {
+    let with_pointer = with_pointer.to_rgba8();
+    let without_pointer = without_pointer.to_rgba8();
+
+    with_pointer.dimensions() != without_pointer.dimensions()
+        || with_pointer.as_raw() != without_pointer.as_raw()
+}
+
+fn screenshot_variant(output: &CaptureOutput, show_pointer: bool) -> DynamicImage {
+    if show_pointer {
+        output.screenshot_with_pointer.clone()
+    } else {
+        output.screenshot_without_pointer.clone()
+    }
 }
 
 fn region_to_logical(rect: Rect) -> LogicalRegion {
