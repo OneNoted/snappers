@@ -194,18 +194,22 @@ pub fn render_dimensions_label(width: i32, height: i32, theme: &Theme) -> Result
         layout.pixel_size()
     };
 
-    let sw = (tw + DIMENSIONS_PADDING * 2).min(DIMENSIONS_MAX_WIDTH);
-    let sh = (th + DIMENSIONS_PADDING * 2).min(DIMENSIONS_MAX_HEIGHT);
+    // Always render at MAX dimensions so the wgpu texture UV mapping is 1:1.
+    // The visible pill is centered within the full surface.
+    let pill_w = (tw + DIMENSIONS_PADDING * 2).min(DIMENSIONS_MAX_WIDTH);
+    let pill_h = (th + DIMENSIONS_PADDING * 2).min(DIMENSIONS_MAX_HEIGHT);
+    let ox = (DIMENSIONS_MAX_WIDTH - pill_w) / 2;
+    let oy = (DIMENSIONS_MAX_HEIGHT - pill_h) / 2;
 
-    let surface = ImageSurface::create(Format::ARgb32, sw, sh)?;
+    let surface = ImageSurface::create(Format::ARgb32, DIMENSIONS_MAX_WIDTH, DIMENSIONS_MAX_HEIGHT)?;
     {
         let cr = Context::new(&surface)?;
         rounded_rect(
             &cr,
-            0.5,
-            0.5,
-            sw as f64 - 1.0,
-            sh as f64 - 1.0,
+            ox as f64 + 0.5,
+            oy as f64 + 0.5,
+            pill_w as f64 - 1.0,
+            pill_h as f64 - 1.0,
             DIMENSIONS_CORNER,
         );
         cr.save()?;
@@ -219,8 +223,8 @@ pub fn render_dimensions_label(width: i32, height: i32, theme: &Theme) -> Result
         cr.stroke()?;
 
         cr.move_to(
-            f64::from(DIMENSIONS_PADDING),
-            f64::from(DIMENSIONS_PADDING),
+            f64::from(ox + DIMENSIONS_PADDING),
+            f64::from(oy + DIMENSIONS_PADDING),
         );
         let layout = pangocairo::functions::create_layout(&cr);
         layout.context().set_round_glyph_positions(false);
@@ -232,8 +236,8 @@ pub fn render_dimensions_label(width: i32, height: i32, theme: &Theme) -> Result
 
     let data = surface.take_data()?;
     Ok(PixelSurface {
-        width: sw,
-        height: sh,
+        width: DIMENSIONS_MAX_WIDTH,
+        height: DIMENSIONS_MAX_HEIGHT,
         data: data.to_vec(),
     })
 }
