@@ -59,7 +59,20 @@ fn main() -> Result<()> {
 
             let image = backend
                 .screenshot_region(selection.region, selection.show_pointer)
-                .context("failed to capture the selected region")?;
+                .with_context(|| {
+                    let outputs = backend.describe_outputs();
+                    if outputs.is_empty() {
+                        format!(
+                            "failed to capture the selected region {} and no outputs are currently available",
+                            selection.region
+                        )
+                    } else {
+                        format!(
+                            "failed to capture the selected region {} across outputs: {}",
+                            selection.region, outputs
+                        )
+                    }
+                })?;
             let write_to_disk = options.write_to_disk && selection.write_to_disk;
             let path = if write_to_disk {
                 config.resolve_output_path(options.path.as_deref())?

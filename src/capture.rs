@@ -94,6 +94,22 @@ impl CaptureBackend {
             .screenshot_single_output(output, show_pointer)
             .with_context(|| format!("failed to capture output {}", output.name))
     }
+
+    pub fn describe_outputs(&self) -> String {
+        self.conn
+            .get_all_outputs()
+            .iter()
+            .map(|output| {
+                let position = output.logical_position();
+                let size = output.logical_size();
+                format!(
+                    "{} @ ({}, {}) {}x{}",
+                    output.name, position.x, position.y, size.width, size.height
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 pub fn encode_png(image: &DynamicImage) -> Result<Vec<u8>> {
