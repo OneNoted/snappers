@@ -31,7 +31,7 @@ use wayland_client::{
 };
 
 use crate::{
-    capture::CaptureSnapshot,
+    capture::{CaptureOutput, CaptureSnapshot},
     config::{AppConfig, KeyBinding},
     geometry::{Point, Rect, Size},
     render::{
@@ -94,7 +94,7 @@ pub fn select_region(
     for capture in &app.snapshot.outputs {
         let Some((wl_output, info)) = known_outputs
             .iter()
-            .find(|(_, info)| info.name.as_deref() == Some(capture.name.as_str()))
+            .find(|(_, info)| output_matches_capture(capture, info))
         else {
             continue;
         };
@@ -112,9 +112,10 @@ pub fn select_region(
         layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
         layer.commit();
 
-        let size = logical_size(info)
-            .with_context(|| format!("output {} is missing logical size", capture.name))?;
+        let logical_rect = logical_rect(info).unwrap_or(capture.logical_rect);
+        let size = Size::new(logical_rect.width, logical_rect.height);
         matched.push(OverlaySurface {
+            logical_rect,
             logical_size: size,
             layer,
             pool: SlotPool::new((size.width * size.height * 4) as usize, &app.shm)
@@ -134,12 +135,7 @@ pub fn select_region(
     let model_outputs = matched
         .iter()
         .map(|surface| ModelOutputState {
-            logical_rect: Rect::new(
-                0,
-                0,
-                surface.logical_size.width,
-                surface.logical_size.height,
-            ),
+            logical_rect: surface.logical_rect,
         })
         .collect::<Vec<_>>();
     app.model = Some(SelectionModel::new(model_outputs, 0, show_pointer));
@@ -156,6 +152,7 @@ pub fn select_region(
 }
 
 struct OverlaySurface {
+    logical_rect: Rect,
     logical_size: Size,
     layer: LayerSurface,
     pool: SlotPool,
@@ -379,8 +376,18 @@ fn matches_binding(
         .any(|binding| binding.matches(keysym, modifiers))
 }
 
-fn logical_size(info: &OutputInfo) -> Option<Size> {
-    info.logical_size.map(|(w, h)| Size::new(w, h))
+fn logical_rect(info: &OutputInfo) -> Option<Rect> {
+    let (x, y) = info.logical_position?;
+    let (w, h) = info.logical_size?;
+    Some(Rect::new(x, y, w, h))
+}
+
+fn output_matches_capture(capture: &CaptureOutput, info: &OutputInfo) -> bool {
+    if info.name.as_deref() == Some(capture.name.as_str()) {
+        return true;
+    }
+
+    logical_rect(info) == Some(capture.logical_rect)
 }
 
 fn point_from_position(position: (f64, f64)) -> Point {
@@ -487,14 +494,15 @@ impl LayerShellHandler for OverlayApp {
             .iter_mut()
             .find(|surface| &surface.layer == layer)
         {
-            surface.logical_size = Size::new(
-                NonZeroU32::new(configure.new_size.0)
-                    .map_or(surface.logical_size.width as u32, NonZeroU32::get)
-                    as i32,
-                NonZeroU32::new(configure.new_size.1)
-                    .map_or(surface.logical_size.height as u32, NonZeroU32::get)
-                    as i32,
-            );
+            let width = NonZeroU32::new(configure.new_size.0)
+                .map_or(surface.logical_size.width as u32, NonZeroU32::get)
+                as i32;
+            let height = NonZeroU32::new(configure.new_size.1)
+                .map_or(surface.logical_size.height as u32, NonZeroU32::get)
+                as i32;
+            surface.logical_size = Size::new(width, height);
+            surface.logical_rect.width = width;
+            surface.logical_rect.height = height;
             surface.configured = true;
             self.dirty = true;
         }

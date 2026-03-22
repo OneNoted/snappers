@@ -30,7 +30,7 @@ pub enum PointerUpOutcome {
 pub struct SelectionModel {
     outputs: Vec<OutputState>,
     selected_output: usize,
-    rect: Rect,
+    local_rect: Rect,
     drag_anchor: Point,
     button: ButtonState,
     pub show_pointer: bool,
@@ -41,9 +41,9 @@ impl SelectionModel {
         let output = &outputs[default_output];
         let width = (output.logical_rect.width / 2).max(1);
         let height = (output.logical_rect.height / 2).max(1);
-        let rect = Rect::new(
-            output.logical_rect.x + output.logical_rect.width / 4,
-            output.logical_rect.y + output.logical_rect.height / 4,
+        let local_rect = Rect::new(
+            output.logical_rect.width / 4,
+            output.logical_rect.height / 4,
             width,
             height,
         );
@@ -51,8 +51,8 @@ impl SelectionModel {
         Self {
             outputs,
             selected_output: default_output,
-            rect,
-            drag_anchor: Point::new(rect.x, rect.y),
+            local_rect,
+            drag_anchor: Point::new(local_rect.x, local_rect.y),
             button: ButtonState::Up,
             show_pointer,
         }
@@ -63,7 +63,7 @@ impl SelectionModel {
     }
 
     pub fn selection_on_output(&self, output_index: usize) -> Option<Rect> {
-        (output_index == self.selected_output).then_some(self.output_local_rect())
+        (output_index == self.selected_output).then_some(self.local_rect)
     }
 
     pub fn dragging_selection(&self) -> bool {
@@ -87,9 +87,8 @@ impl SelectionModel {
         }
 
         self.selected_output = output_index;
-        let global = self.surface_to_global(output_index, point);
-        self.drag_anchor = global;
-        self.rect = Rect::new(global.x, global.y, 1, 1);
+        self.drag_anchor = point;
+        self.local_rect = Rect::new(point.x, point.y, 1, 1);
         self.button = ButtonState::Down {
             output_index,
             last_point: point,
@@ -124,21 +123,20 @@ impl SelectionModel {
             return false;
         }
 
-        let global = self.surface_to_global(output_index, point);
         if moving {
-            let delta_x = global.x - self.drag_anchor.x;
-            let delta_y = global.y - self.drag_anchor.y;
-            self.rect = Rect::new(
-                self.rect.x + delta_x,
-                self.rect.y + delta_y,
-                self.rect.width,
-                self.rect.height,
+            let delta_x = point.x - self.drag_anchor.x;
+            let delta_y = point.y - self.drag_anchor.y;
+            self.local_rect = Rect::new(
+                self.local_rect.x + delta_x,
+                self.local_rect.y + delta_y,
+                self.local_rect.width,
+                self.local_rect.height,
             )
-            .clamp_within(self.output_bounds(self.selected_output));
-            self.drag_anchor = global;
+            .clamp_within(self.local_bounds(self.selected_output));
+            self.drag_anchor = point;
         } else {
-            self.rect = Rect::from_corners(self.drag_anchor, global)
-                .clamp_within(self.output_bounds(self.selected_output));
+            self.local_rect = Rect::from_corners(self.drag_anchor, point)
+                .clamp_within(self.local_bounds(self.selected_output));
         }
 
         self.button = ButtonState::Down {
@@ -174,12 +172,11 @@ impl SelectionModel {
             return PointerUpOutcome::Confirm;
         }
 
-        if self.rect.width <= 1 && self.rect.height <= 1 {
-            let global = self.surface_to_global(output_index, point);
-            let bounds = self.output_bounds(self.selected_output);
-            self.rect = Rect::new(
-                global.x - DEFAULT_CLICK_SIZE / 2,
-                global.y - DEFAULT_CLICK_SIZE / 2,
+        if self.local_rect.width <= 1 && self.local_rect.height <= 1 {
+            let bounds = self.local_bounds(self.selected_output);
+            self.local_rect = Rect::new(
+                point.x - DEFAULT_CLICK_SIZE / 2,
+                point.y - DEFAULT_CLICK_SIZE / 2,
                 DEFAULT_CLICK_SIZE,
                 DEFAULT_CLICK_SIZE,
             )
@@ -197,7 +194,7 @@ impl SelectionModel {
             ..
         } = self.button
         {
-            self.drag_anchor = self.surface_to_global(output_index, last_point);
+            self.drag_anchor = last_point;
             self.button = ButtonState::Down {
                 output_index,
                 last_point,
@@ -254,24 +251,30 @@ impl SelectionModel {
             return;
         }
 
-        let current_bounds = self.output_bounds(self.selected_output);
-        let target_bounds = self.output_bounds(new_index);
-        let rel_x = (self.rect.x - current_bounds.x) as f64 / current_bounds.width as f64;
-        let rel_y = (self.rect.y - current_bounds.y) as f64 / current_bounds.height as f64;
+        let current_bounds = self.local_bounds(self.selected_output);
+        let target_bounds = self.local_bounds(new_index);
+        let rel_x = self.local_rect.x as f64 / current_bounds.width as f64;
+        let rel_y = self.local_rect.y as f64 / current_bounds.height as f64;
 
         let mut rect = Rect::new(
-            target_bounds.x + (rel_x * target_bounds.width as f64).round() as i32,
-            target_bounds.y + (rel_y * target_bounds.height as f64).round() as i32,
-            self.rect.width.min(target_bounds.width),
-            self.rect.height.min(target_bounds.height),
+            (rel_x * target_bounds.width as f64).round() as i32,
+            (rel_y * target_bounds.height as f64).round() as i32,
+            self.local_rect.width.min(target_bounds.width),
+            self.local_rect.height.min(target_bounds.height),
         );
         rect = rect.clamp_within(target_bounds);
         self.selected_output = new_index;
-        self.rect = rect;
+        self.local_rect = rect;
     }
 
     pub fn capture_region(&self) -> Rect {
-        self.rect
+        let bounds = self.output_global_bounds(self.selected_output);
+        Rect::new(
+            bounds.x + self.local_rect.x,
+            bounds.y + self.local_rect.y,
+            self.local_rect.width,
+            self.local_rect.height,
+        )
     }
 
     pub fn button_state(&self) -> ButtonState {
@@ -279,43 +282,33 @@ impl SelectionModel {
     }
 
     fn nudge(&mut self, dx: i32, dy: i32) {
-        self.rect = Rect::new(
-            self.rect.x + dx,
-            self.rect.y + dy,
-            self.rect.width,
-            self.rect.height,
+        self.local_rect = Rect::new(
+            self.local_rect.x + dx,
+            self.local_rect.y + dy,
+            self.local_rect.width,
+            self.local_rect.height,
         )
-        .clamp_within(self.output_bounds(self.selected_output));
+        .clamp_within(self.local_bounds(self.selected_output));
     }
 
     fn resize_by(&mut self, dw: i32, dh: i32) {
-        let bounds = self.output_bounds(self.selected_output);
-        self.rect = Rect::new(
-            self.rect.x,
-            self.rect.y,
-            (self.rect.width + dw).max(1),
-            (self.rect.height + dh).max(1),
+        let bounds = self.local_bounds(self.selected_output);
+        self.local_rect = Rect::new(
+            self.local_rect.x,
+            self.local_rect.y,
+            (self.local_rect.width + dw).max(1),
+            (self.local_rect.height + dh).max(1),
         )
         .clamp_within(bounds);
     }
 
-    fn output_local_rect(&self) -> Rect {
-        let bounds = self.output_bounds(self.selected_output);
-        Rect::new(
-            self.rect.x - bounds.x,
-            self.rect.y - bounds.y,
-            self.rect.width,
-            self.rect.height,
-        )
-    }
-
-    fn surface_to_global(&self, output_index: usize, point: Point) -> Point {
-        let output = &self.outputs[output_index].logical_rect;
-        Point::new(output.x + point.x, output.y + point.y)
-    }
-
-    fn output_bounds(&self, output_index: usize) -> Rect {
+    fn output_global_bounds(&self, output_index: usize) -> Rect {
         self.outputs[output_index].logical_rect
+    }
+
+    fn local_bounds(&self, output_index: usize) -> Rect {
+        let output = self.output_global_bounds(output_index);
+        Rect::new(0, 0, output.width, output.height)
     }
 }
 
@@ -366,5 +359,14 @@ mod tests {
             model.resize_right();
         }
         assert!(model.capture_region().width <= 1920);
+    }
+
+    #[test]
+    fn capture_region_includes_global_output_origin() {
+        let outputs = vec![OutputState {
+            logical_rect: Rect::new(-1600, 200, 1600, 900),
+        }];
+        let model = SelectionModel::new(outputs, 0, true);
+        assert_eq!(model.capture_region(), Rect::new(-1200, 425, 800, 450));
     }
 }

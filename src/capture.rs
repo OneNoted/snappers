@@ -10,6 +10,7 @@ use crate::geometry::Rect;
 #[derive(Debug, Clone)]
 pub struct CaptureOutput {
     pub name: String,
+    pub logical_rect: Rect,
     pub screenshot_with_pointer: DynamicImage,
     pub screenshot_without_pointer: DynamicImage,
 }
@@ -34,6 +35,8 @@ impl CaptureBackend {
     pub fn snapshot(&self) -> Result<CaptureSnapshot> {
         let mut outputs = Vec::new();
         for output in self.conn.get_all_outputs() {
+            let logical_position = output.logical_position();
+            let logical_size = output.logical_size();
             let with_pointer = self
                 .conn
                 .screenshot_single_output(output, true)
@@ -45,6 +48,12 @@ impl CaptureBackend {
 
             outputs.push(CaptureOutput {
                 name: output.name.clone(),
+                logical_rect: Rect::new(
+                    logical_position.x,
+                    logical_position.y,
+                    logical_size.width as i32,
+                    logical_size.height as i32,
+                ),
                 screenshot_with_pointer: with_pointer,
                 screenshot_without_pointer: without_pointer,
             });
