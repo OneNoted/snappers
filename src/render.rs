@@ -162,65 +162,69 @@ pub fn capture_button_hit(panel_rect: Rect, point: Point) -> bool {
 }
 
 fn render_panel(text: &str) -> Result<PixelSurface> {
-    let surface = ImageSurface::create(Format::ARgb32, 0, 0)?;
-    let cr = Context::new(&surface)?;
-
     let mut font = FontDescription::from_string(FONT);
     font.set_absolute_size((14 * pango::SCALE) as f64);
 
-    let layout = pangocairo::functions::create_layout(&cr);
-    layout.context().set_round_glyph_positions(false);
-    layout.set_font_description(Some(&font));
-    layout.set_alignment(Alignment::Left);
-    layout.set_markup(text);
-    layout.set_spacing(2 * 1024);
+    let (width, height) = {
+        let surface = ImageSurface::create(Format::ARgb32, 0, 0)?;
+        let cr = Context::new(&surface)?;
+        let layout = pangocairo::functions::create_layout(&cr);
+        layout.context().set_round_glyph_positions(false);
+        layout.set_font_description(Some(&font));
+        layout.set_alignment(Alignment::Left);
+        layout.set_markup(text);
+        layout.set_spacing(2 * 1024);
 
-    let (mut width, mut height) = layout.pixel_size();
-    width += PADDING + RADIUS * 2 + PADDING - BORDER / 2 + PADDING;
-    height = height.max(RADIUS * 2);
-    height += PADDING * 2;
+        let (mut width, mut height) = layout.pixel_size();
+        width += PADDING + RADIUS * 2 + PADDING - BORDER / 2 + PADDING;
+        height = height.max(RADIUS * 2);
+        height += PADDING * 2;
+        (width, height)
+    };
 
     let surface = ImageSurface::create(Format::ARgb32, width, height)?;
-    let cr = Context::new(&surface)?;
-    cr.set_source_rgb(0.1, 0.1, 0.1);
-    cr.paint()?;
+    {
+        let cr = Context::new(&surface)?;
+        cr.set_source_rgb(0.1, 0.1, 0.1);
+        cr.paint()?;
 
-    let yc = f64::from(height / 2);
-    let r = f64::from(RADIUS);
+        let yc = f64::from(height / 2);
+        let r = f64::from(RADIUS);
 
-    cr.new_sub_path();
-    cr.arc(f64::from(PADDING) + r, yc, r, 0.0, TAU);
-    cr.set_source_rgb(1.0, 1.0, 1.0);
-    cr.fill()?;
+        cr.new_sub_path();
+        cr.arc(f64::from(PADDING) + r, yc, r, 0.0, TAU);
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        cr.fill()?;
 
-    cr.new_sub_path();
-    cr.arc(f64::from(PADDING) + r, yc, r - 2.0, 0.0, TAU);
-    cr.set_source_rgb(0.1, 0.1, 0.1);
-    cr.fill()?;
+        cr.new_sub_path();
+        cr.arc(f64::from(PADDING) + r, yc, r - 2.0, 0.0, TAU);
+        cr.set_source_rgb(0.1, 0.1, 0.1);
+        cr.fill()?;
 
-    cr.new_sub_path();
-    cr.arc(f64::from(PADDING) + r, yc, r - 4.0, 0.0, TAU);
-    cr.set_source_rgb(1.0, 1.0, 1.0);
-    cr.fill()?;
+        cr.new_sub_path();
+        cr.arc(f64::from(PADDING) + r, yc, r - 4.0, 0.0, TAU);
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        cr.fill()?;
 
-    cr.move_to(
-        f64::from(PADDING + RADIUS * 2 + PADDING - BORDER / 2),
-        f64::from(PADDING),
-    );
-    let layout = pangocairo::functions::create_layout(&cr);
-    layout.context().set_round_glyph_positions(false);
-    layout.set_font_description(Some(&font));
-    layout.set_alignment(Alignment::Left);
-    layout.set_markup(text);
-    layout.set_spacing(2 * 1024);
+        cr.move_to(
+            f64::from(PADDING + RADIUS * 2 + PADDING - BORDER / 2),
+            f64::from(PADDING),
+        );
+        let layout = pangocairo::functions::create_layout(&cr);
+        layout.context().set_round_glyph_positions(false);
+        layout.set_font_description(Some(&font));
+        layout.set_alignment(Alignment::Left);
+        layout.set_markup(text);
+        layout.set_spacing(2 * 1024);
 
-    cr.set_source_rgb(1.0, 1.0, 1.0);
-    pangocairo::functions::show_layout(&cr, &layout);
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        pangocairo::functions::show_layout(&cr, &layout);
 
-    cr.rectangle(0.0, 0.0, width as f64, height as f64);
-    cr.set_source_rgb(0.3, 0.3, 0.3);
-    cr.set_line_width(BORDER as f64);
-    cr.stroke()?;
+        cr.rectangle(0.0, 0.0, width as f64, height as f64);
+        cr.set_source_rgb(0.3, 0.3, 0.3);
+        cr.set_line_width(BORDER as f64);
+        cr.stroke()?;
+    }
 
     let data = surface.take_data()?;
     Ok(PixelSurface {
@@ -228,4 +232,48 @@ fn render_panel(text: &str) -> Result<PixelSurface> {
         height,
         data: data.to_vec(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_panel_assets_renders_pixel_buffers() {
+        let assets = build_panel_assets().expect("panel assets should render");
+        assert!(assets.show_pointer.width > 0);
+        assert!(assets.show_pointer.height > 0);
+        assert!(!assets.show_pointer.data.is_empty());
+        assert!(assets.hide_pointer.width > 0);
+        assert!(assets.hide_pointer.height > 0);
+        assert!(!assets.hide_pointer.data.is_empty());
+    }
+
+    #[test]
+    fn final_overlay_surface_can_be_mapped_after_painting() {
+        let output_size = Size::new(800, 600);
+        let mut background = PixelSurface {
+            width: 2,
+            height: 2,
+            data: vec![255; 2 * 2 * 4],
+        };
+        let assets = build_panel_assets().expect("panel assets should render");
+        let mut panel = assets.show_pointer.clone();
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, output_size.width, output_size.height)
+                .expect("surface should allocate");
+
+        {
+            let cr = Context::new(&surface).expect("context should create");
+            paint_background(&cr, &mut background, output_size).expect("background should paint");
+            paint_masks_and_border(&cr, output_size, Some(Rect::new(100, 120, 200, 160)))
+                .expect("mask should paint");
+            paint_panel(&cr, &mut panel, output_size, false).expect("panel should paint");
+        }
+
+        let data = surface
+            .data()
+            .expect("surface data should be accessible after painting");
+        assert!(!data.is_empty());
+    }
 }
