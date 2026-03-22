@@ -202,27 +202,34 @@ impl OverlayApp {
                 )
                 .context("failed to create overlay buffer")?;
             let mut surface = ImageSurface::create(Format::ARgb32, width as i32, height as i32)?;
-            let cr = CairoContext::new(&surface)?;
+            {
+                let cr = CairoContext::new(&surface)?;
 
-            let screenshot = if model.show_pointer {
-                &mut overlay.with_pointer
-            } else {
-                &mut overlay.without_pointer
-            };
-            paint_background(&cr, screenshot, overlay.logical_size)?;
-            paint_masks_and_border(&cr, overlay.logical_size, model.selection_on_output(index))?;
+                let screenshot = if model.show_pointer {
+                    &mut overlay.with_pointer
+                } else {
+                    &mut overlay.without_pointer
+                };
+                paint_background(&cr, screenshot, overlay.logical_size)?;
+                paint_masks_and_border(
+                    &cr,
+                    overlay.logical_size,
+                    model.selection_on_output(index),
+                )?;
 
-            let panel = if model.show_pointer {
-                &mut self.panels.hide_pointer
-            } else {
-                &mut self.panels.show_pointer
-            };
-            let _panel_rect =
-                paint_panel(&cr, panel, overlay.logical_size, model.dragging_selection())?;
-            drop(cr);
+                let panel = if model.show_pointer {
+                    &mut self.panels.hide_pointer
+                } else {
+                    &mut self.panels.show_pointer
+                };
+                let _panel_rect =
+                    paint_panel(&cr, panel, overlay.logical_size, model.dragging_selection())?;
+            }
             surface.flush();
             {
-                let data = surface.data()?;
+                let data = surface.data().context(
+                    "overlay render surface still had live cairo references during shm copy",
+                )?;
                 canvas.copy_from_slice(&data);
             }
 
