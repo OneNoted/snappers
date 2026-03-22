@@ -21,6 +21,19 @@ pub enum Command {
     Screen(ScreenOptions),
     /// Print the resolved config path.
     ConfigPath,
+    #[command(hide = true)]
+    ClipboardServe,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_hidden_clipboard_subcommand() {
+        let cli = Cli::parse_from(["snappers", "clipboard-serve"]);
+        assert!(matches!(cli.command, Command::ClipboardServe));
+    }
 }
 
 #[derive(Debug, Clone, Args)]
