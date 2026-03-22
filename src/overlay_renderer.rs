@@ -16,10 +16,11 @@ use wgpu::util::DeviceExt;
 use crate::{
     geometry::{Rect, Size},
     render::{
-        PanelAssets, PixelSurface, paint_background, paint_masks_and_border, paint_panel,
-        panel_location,
+        HANDLE_SIZE, PanelAssets, PixelSurface, paint_background, paint_masks_and_border,
+        paint_panel, panel_location,
     },
     state::SelectionModel,
+    theme::Theme,
 };
 
 const MAX_SOLID_INSTANCES: usize = 12;
@@ -44,13 +45,14 @@ impl OverlayRenderer {
         shm: &Shm,
         outputs: Vec<RendererOutputInit>,
         panels: PanelAssets,
+        theme: Theme,
     ) -> Result<Self> {
-        match WgpuRenderer::new(conn, &outputs, panels.clone()) {
+        match WgpuRenderer::new(conn, &outputs, panels.clone(), theme.clone()) {
             Ok(renderer) => Ok(Self::Wgpu(renderer)),
             Err(err) => {
                 warn!("failed to initialize wgpu overlay renderer: {err:#}");
                 warn!("falling back to cairo/shm overlay renderer");
-                Ok(Self::Shm(ShmRenderer::new(shm, outputs, panels)?))
+                Ok(Self::Shm(ShmRenderer::new(shm, outputs, panels, theme)?))
             }
         }
     }
@@ -78,6 +80,7 @@ impl OverlayRenderer {
 pub(crate) struct ShmRenderer {
     outputs: Vec<ShmOutput>,
     panels: PanelAssets,
+    theme: Theme,
 }
 
 struct ShmOutput {
@@ -89,7 +92,7 @@ struct ShmOutput {
 }
 
 impl ShmRenderer {
-    fn new(shm: &Shm, outputs: Vec<RendererOutputInit>, panels: PanelAssets) -> Result<Self> {
+    fn new(shm: &Shm, outputs: Vec<RendererOutputInit>, panels: PanelAssets, theme: Theme) -> Result<Self> {
         let mut renderer_outputs = Vec::with_capacity(outputs.len());
         for output in outputs {
             output.wl_surface.set_buffer_scale(1);
@@ -110,6 +113,7 @@ impl ShmRenderer {
         Ok(Self {
             outputs: renderer_outputs,
             panels,
+            theme,
         })
     }
 
@@ -150,7 +154,7 @@ impl ShmRenderer {
                     &mut output.without_pointer
                 };
                 paint_background(&cr, screenshot, output.logical_size)?;
-                paint_masks_and_border(&cr, output.logical_size, model.selection_on_output(index))?;
+                paint_masks_and_border(&cr, output.logical_size, model.selection_on_output(index), &self.theme)?;
 
                 let panel = if model.show_pointer {
                     &mut self.panels.hide_pointer
@@ -189,6 +193,7 @@ pub(crate) struct WgpuRenderer {
     panel_show: GpuTexture,
     panel_hide: GpuTexture,
     outputs: Vec<GpuOutput>,
+    theme: Theme,
 }
 
 struct GpuOutput {
@@ -244,7 +249,7 @@ struct SolidInstance {
 }
 
 impl WgpuRenderer {
-    fn new(conn: &Connection, outputs: &[RendererOutputInit], panels: PanelAssets) -> Result<Self> {
+    fn new(conn: &Connection, outputs: &[RendererOutputInit], panels: PanelAssets, theme: Theme) -> Result<Self> {
         let instance = wgpu::Instance::default();
 
         let raw_display_handle = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(
@@ -480,6 +485,7 @@ impl WgpuRenderer {
             panel_show,
             panel_hide,
             outputs,
+            theme,
         })
     }
 
@@ -535,7 +541,7 @@ impl WgpuRenderer {
         );
 
         let solid_instances =
-            solid_instances(output.logical_size, model.selection_on_output(index));
+            solid_instances(output.logical_size, model.selection_on_output(index), &self.theme);
         self.queue.write_buffer(
             &output.solid_instances,
             0,
@@ -1009,29 +1015,49 @@ fn textured_instances(
     ]
 }
 
-fn solid_instances(output_size: Size, selection: Option<Rect>) -> Vec<SolidInstance> {
+fn solid_instances(output_size: Size, selection: Option<Rect>, theme: &Theme) -> Vec<SolidInstance> {
+    let dim = theme.dim_mask.as_f32_array();
+    let accent = theme.accent.as_f32_array();
     let mut instances = Vec::with_capacity(MAX_SOLID_INSTANCES);
     if let Some(selection) = selection {
-        let dims = mask_rects(output_size, selection);
-        instances.extend(dims.into_iter().map(|rect| SolidInstance {
+        instances.extend(mask_rects(output_size, selection).into_iter().map(|rect| SolidInstance {
             rect: rect_to_f32(rect),
-            color: [0.0, 0.0, 0.0, 0.5],
+            color: dim,
         }));
         instances.extend(
             border_rects(selection)
                 .into_iter()
                 .map(|rect| SolidInstance {
                     rect: rect_to_f32(rect),
-                    color: [1.0, 1.0, 1.0, 1.0],
+                    color: accent,
+                }),
+        );
+        instances.extend(
+            corner_handle_rects(selection)
+                .into_iter()
+                .map(|rect| SolidInstance {
+                    rect: rect_to_f32(rect),
+                    color: accent,
                 }),
         );
     } else {
         instances.push(SolidInstance {
             rect: rect_to_f32(Rect::new(0, 0, output_size.width, output_size.height)),
-            color: [0.0, 0.0, 0.0, 0.5],
+            color: dim,
         });
     }
     instances
+}
+
+fn corner_handle_rects(selection: Rect) -> [Rect; 4] {
+    let hs = HANDLE_SIZE;
+    let half = hs / 2;
+    [
+        Rect::new(selection.x - half, selection.y - half, hs, hs),
+        Rect::new(selection.x + selection.width - half, selection.y - half, hs, hs),
+        Rect::new(selection.x - half, selection.y + selection.height - half, hs, hs),
+        Rect::new(selection.x + selection.width - half, selection.y + selection.height - half, hs, hs),
+    ]
 }
 
 fn mask_rects(output_size: Size, selection: Rect) -> [Rect; 4] {
@@ -1181,16 +1207,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn solid_instances_cover_masks_and_border() {
-        let instances = solid_instances(Size::new(800, 600), Some(Rect::new(100, 120, 200, 160)));
-        assert_eq!(instances.len(), 8);
+    fn solid_instances_cover_masks_border_and_corners() {
+        let theme = Theme::default();
+        let instances = solid_instances(
+            Size::new(800, 600),
+            Some(Rect::new(100, 120, 200, 160)),
+            &theme,
+        );
+        // 4 mask + 4 border + 4 corner handles = 12
+        assert_eq!(instances.len(), 12);
         assert_eq!(instances[0].rect, rect_to_f32(Rect::new(0, 0, 800, 120)));
     }
 
     #[test]
     fn solid_instances_dim_whole_output_without_selection() {
-        let instances = solid_instances(Size::new(800, 600), None);
+        let theme = Theme::default();
+        let instances = solid_instances(Size::new(800, 600), None, &theme);
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].rect, rect_to_f32(Rect::new(0, 0, 800, 600)));
+    }
+
+    #[test]
+    fn corner_handles_at_selection_corners() {
+        let sel = Rect::new(100, 120, 200, 160);
+        let handles = corner_handle_rects(sel);
+        let hs = HANDLE_SIZE;
+        let half = hs / 2;
+        assert_eq!(handles[0], Rect::new(100 - half, 120 - half, hs, hs));
+        assert_eq!(handles[1], Rect::new(300 - half, 120 - half, hs, hs));
+        assert_eq!(handles[2], Rect::new(100 - half, 280 - half, hs, hs));
+        assert_eq!(handles[3], Rect::new(300 - half, 280 - half, hs, hs));
     }
 }

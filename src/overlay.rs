@@ -61,12 +61,13 @@ pub fn select_region(
         LayerShell::bind(&globals, &qh).context("wlr-layer-shell is not available")?;
     let shm = Shm::bind(&globals, &qh).context("wl_shm is not available")?;
 
+    let theme = config.theme.clone();
     let mut app = OverlayApp {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),
         shm,
-        panels: build_panel_assets()?,
+        panels: build_panel_assets(&theme)?,
         overlays: Vec::new(),
         model: None,
         renderer: None,
@@ -151,6 +152,7 @@ pub fn select_region(
         &app.shm,
         renderer_outputs,
         app.panels.clone(),
+        theme,
     )?);
     app.model = Some(SelectionModel::new(model_outputs, 0, show_pointer));
     app.overlays = matched;

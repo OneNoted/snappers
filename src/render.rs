@@ -1,21 +1,19 @@
-use std::f64::consts::TAU;
+use std::f64::consts::{PI, TAU};
 
 use anyhow::Result;
 use cairo::{Context, Format, ImageSurface};
 use pango::{Alignment, FontDescription};
 
 use crate::geometry::{Point, Rect, Size};
+use crate::theme::Theme;
 
-pub const SELECTION_BORDER: i32 = 2;
+pub const SELECTION_BORDER: i32 = 3;
+pub const HANDLE_SIZE: i32 = 6;
 const PADDING: i32 = 8;
 const RADIUS: i32 = 16;
-const BORDER: i32 = 4;
+const BORDER: f64 = 1.0;
+const CORNER_RADIUS: f64 = 8.0;
 const FONT: &str = "sans 14px";
-
-const TEXT_HIDE_P: &str = "Press <span face='mono' bgcolor='#2C2C2C'> Space </span> to save the screenshot.\n\
-     Press <span face='mono' bgcolor='#2C2C2C'> P </span> to hide the pointer.";
-const TEXT_SHOW_P: &str = "Press <span face='mono' bgcolor='#2C2C2C'> Space </span> to save the screenshot.\n\
-     Press <span face='mono' bgcolor='#2C2C2C'> P </span> to show the pointer.";
 
 #[derive(Debug, Clone)]
 pub struct PixelSurface {
@@ -53,11 +51,20 @@ impl PixelSurface {
     }
 }
 
-pub fn build_panel_assets() -> Result<PanelAssets> {
+pub fn build_panel_assets(theme: &Theme) -> Result<PanelAssets> {
     Ok(PanelAssets {
-        show_pointer: render_panel(TEXT_SHOW_P)?,
-        hide_pointer: render_panel(TEXT_HIDE_P)?,
+        show_pointer: render_panel(&panel_markup("show", theme), theme)?,
+        hide_pointer: render_panel(&panel_markup("hide", theme), theme)?,
     })
+}
+
+fn panel_markup(pointer_verb: &str, theme: &Theme) -> String {
+    let bg = theme.badge_bg.to_hex_rgb();
+    let fg = theme.badge_text.to_hex_rgb();
+    format!(
+        "Press <span face='mono' bgcolor='{bg}' fgcolor='{fg}'> Space </span> to save the screenshot.\n\
+         Press <span face='mono' bgcolor='{bg}' fgcolor='{fg}'> P </span> to {pointer_verb} the pointer."
+    )
 }
 
 pub fn paint_background(cr: &Context, surface: &mut PixelSurface, target_size: Size) -> Result<()> {
@@ -81,8 +88,9 @@ pub fn paint_masks_and_border(
     cr: &Context,
     output_size: Size,
     selection: Option<Rect>,
+    theme: &Theme,
 ) -> Result<()> {
-    cr.set_source_rgba(0.0, 0.0, 0.0, 0.5);
+    theme.dim_mask.set_source(cr);
     if let Some(rect) = selection {
         cr.rectangle(0.0, 0.0, output_size.width as f64, rect.y as f64);
         cr.fill()?;
@@ -103,7 +111,7 @@ pub fn paint_masks_and_border(
         );
         cr.fill()?;
 
-        cr.set_source_rgb(1.0, 1.0, 1.0);
+        theme.accent.set_source(cr);
         cr.set_line_width(SELECTION_BORDER as f64);
         cr.rectangle(
             rect.x as f64 - SELECTION_BORDER as f64 / 2.0,
@@ -112,6 +120,18 @@ pub fn paint_masks_and_border(
             rect.height as f64 + SELECTION_BORDER as f64,
         );
         cr.stroke()?;
+
+        let hs = HANDLE_SIZE as f64;
+        let half = hs / 2.0;
+        for (hx, hy) in [
+            (rect.x as f64, rect.y as f64),
+            ((rect.x + rect.width) as f64, rect.y as f64),
+            (rect.x as f64, (rect.y + rect.height) as f64),
+            ((rect.x + rect.width) as f64, (rect.y + rect.height) as f64),
+        ] {
+            cr.rectangle(hx - half, hy - half, hs, hs);
+            cr.fill()?;
+        }
     } else {
         cr.rectangle(
             0.0,
@@ -161,7 +181,7 @@ pub fn capture_button_hit(panel_rect: Rect, point: Point) -> bool {
     dx * dx + dy * dy <= radius * radius
 }
 
-fn render_panel(text: &str) -> Result<PixelSurface> {
+fn render_panel(text: &str, theme: &Theme) -> Result<PixelSurface> {
     let mut font = FontDescription::from_string(FONT);
     font.set_absolute_size((14 * pango::SCALE) as f64);
 
@@ -176,7 +196,7 @@ fn render_panel(text: &str) -> Result<PixelSurface> {
         layout.set_spacing(2 * 1024);
 
         let (mut width, mut height) = layout.pixel_size();
-        width += PADDING + RADIUS * 2 + PADDING - BORDER / 2 + PADDING;
+        width += PADDING + RADIUS * 2 + PADDING + PADDING;
         height = height.max(RADIUS * 2);
         height += PADDING * 2;
         (width, height)
@@ -185,29 +205,32 @@ fn render_panel(text: &str) -> Result<PixelSurface> {
     let surface = ImageSurface::create(Format::ARgb32, width, height)?;
     {
         let cr = Context::new(&surface)?;
-        cr.set_source_rgb(0.1, 0.1, 0.1);
-        cr.paint()?;
 
+        // Rounded-rect background
+        let inset = BORDER / 2.0;
+        rounded_rect(&cr, inset, inset, width as f64 - BORDER, height as f64 - BORDER, CORNER_RADIUS);
+        cr.save()?;
+        cr.clip_preserve();
+        theme.panel_bg.set_source(&cr);
+        cr.paint()?;
+        cr.restore()?;
+
+        // Border stroke along the same path
+        theme.panel_border.set_source(&cr);
+        cr.set_line_width(BORDER);
+        cr.stroke()?;
+
+        // Capture button — single accent-filled circle
         let yc = f64::from(height / 2);
         let r = f64::from(RADIUS);
-
         cr.new_sub_path();
-        cr.arc(f64::from(PADDING) + r, yc, r, 0.0, TAU);
-        cr.set_source_rgb(1.0, 1.0, 1.0);
+        cr.arc(f64::from(PADDING) + r, yc, r - 3.0, 0.0, TAU);
+        theme.accent.set_source(&cr);
         cr.fill()?;
 
-        cr.new_sub_path();
-        cr.arc(f64::from(PADDING) + r, yc, r - 2.0, 0.0, TAU);
-        cr.set_source_rgb(0.1, 0.1, 0.1);
-        cr.fill()?;
-
-        cr.new_sub_path();
-        cr.arc(f64::from(PADDING) + r, yc, r - 4.0, 0.0, TAU);
-        cr.set_source_rgb(1.0, 1.0, 1.0);
-        cr.fill()?;
-
+        // Panel text
         cr.move_to(
-            f64::from(PADDING + RADIUS * 2 + PADDING - BORDER / 2),
+            f64::from(PADDING + RADIUS * 2 + PADDING),
             f64::from(PADDING),
         );
         let layout = pangocairo::functions::create_layout(&cr);
@@ -217,13 +240,8 @@ fn render_panel(text: &str) -> Result<PixelSurface> {
         layout.set_markup(text);
         layout.set_spacing(2 * 1024);
 
-        cr.set_source_rgb(1.0, 1.0, 1.0);
+        theme.text.set_source(&cr);
         pangocairo::functions::show_layout(&cr, &layout);
-
-        cr.rectangle(0.0, 0.0, width as f64, height as f64);
-        cr.set_source_rgb(0.3, 0.3, 0.3);
-        cr.set_line_width(BORDER as f64);
-        cr.stroke()?;
     }
 
     let data = surface.take_data()?;
@@ -234,13 +252,23 @@ fn render_panel(text: &str) -> Result<PixelSurface> {
     })
 }
 
+fn rounded_rect(cr: &Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
+    cr.new_sub_path();
+    cr.arc(x + r, y + r, r, PI, 1.5 * PI);
+    cr.arc(x + w - r, y + r, r, 1.5 * PI, 2.0 * PI);
+    cr.arc(x + w - r, y + h - r, r, 0.0, 0.5 * PI);
+    cr.arc(x + r, y + h - r, r, 0.5 * PI, PI);
+    cr.close_path();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn build_panel_assets_renders_pixel_buffers() {
-        let assets = build_panel_assets().expect("panel assets should render");
+        let theme = Theme::default();
+        let assets = build_panel_assets(&theme).expect("panel assets should render");
         assert!(assets.show_pointer.width > 0);
         assert!(assets.show_pointer.height > 0);
         assert!(!assets.show_pointer.data.is_empty());
@@ -251,13 +279,14 @@ mod tests {
 
     #[test]
     fn final_overlay_surface_can_be_mapped_after_painting() {
+        let theme = Theme::default();
         let output_size = Size::new(800, 600);
         let mut background = PixelSurface {
             width: 2,
             height: 2,
             data: vec![255; 2 * 2 * 4],
         };
-        let assets = build_panel_assets().expect("panel assets should render");
+        let assets = build_panel_assets(&theme).expect("panel assets should render");
         let mut panel = assets.show_pointer.clone();
         let mut surface =
             ImageSurface::create(Format::ARgb32, output_size.width, output_size.height)
@@ -266,8 +295,13 @@ mod tests {
         {
             let cr = Context::new(&surface).expect("context should create");
             paint_background(&cr, &mut background, output_size).expect("background should paint");
-            paint_masks_and_border(&cr, output_size, Some(Rect::new(100, 120, 200, 160)))
-                .expect("mask should paint");
+            paint_masks_and_border(
+                &cr,
+                output_size,
+                Some(Rect::new(100, 120, 200, 160)),
+                &theme,
+            )
+            .expect("mask should paint");
             paint_panel(&cr, &mut panel, output_size, false).expect("panel should paint");
         }
 
