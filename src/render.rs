@@ -172,6 +172,108 @@ pub fn panel_location(output_size: Size, panel_size: Size) -> Point {
     Point::new(x, y)
 }
 
+pub const DIMENSIONS_MAX_WIDTH: i32 = 256;
+pub const DIMENSIONS_MAX_HEIGHT: i32 = 48;
+const DIMENSIONS_FONT: &str = "mono 13px";
+const DIMENSIONS_PADDING: i32 = 6;
+const DIMENSIONS_CORNER: f64 = 6.0;
+const DIMENSIONS_GAP: i32 = 8;
+
+pub fn render_dimensions_label(width: i32, height: i32, theme: &Theme) -> Result<PixelSurface> {
+    let text = format!("{width} \u{00d7} {height}");
+    let mut font = FontDescription::from_string(DIMENSIONS_FONT);
+    font.set_absolute_size((13 * pango::SCALE) as f64);
+
+    let (tw, th) = {
+        let surface = ImageSurface::create(Format::ARgb32, 0, 0)?;
+        let cr = Context::new(&surface)?;
+        let layout = pangocairo::functions::create_layout(&cr);
+        layout.context().set_round_glyph_positions(false);
+        layout.set_font_description(Some(&font));
+        layout.set_text(&text);
+        layout.pixel_size()
+    };
+
+    let sw = (tw + DIMENSIONS_PADDING * 2).min(DIMENSIONS_MAX_WIDTH);
+    let sh = (th + DIMENSIONS_PADDING * 2).min(DIMENSIONS_MAX_HEIGHT);
+
+    let surface = ImageSurface::create(Format::ARgb32, sw, sh)?;
+    {
+        let cr = Context::new(&surface)?;
+        rounded_rect(
+            &cr,
+            0.5,
+            0.5,
+            sw as f64 - 1.0,
+            sh as f64 - 1.0,
+            DIMENSIONS_CORNER,
+        );
+        cr.save()?;
+        cr.clip_preserve();
+        theme.panel_bg.set_source(&cr);
+        cr.paint()?;
+        cr.restore()?;
+
+        theme.panel_border.set_source(&cr);
+        cr.set_line_width(1.0);
+        cr.stroke()?;
+
+        cr.move_to(
+            f64::from(DIMENSIONS_PADDING),
+            f64::from(DIMENSIONS_PADDING),
+        );
+        let layout = pangocairo::functions::create_layout(&cr);
+        layout.context().set_round_glyph_positions(false);
+        layout.set_font_description(Some(&font));
+        layout.set_text(&text);
+        theme.text_dim.set_source(&cr);
+        pangocairo::functions::show_layout(&cr, &layout);
+    }
+
+    let data = surface.take_data()?;
+    Ok(PixelSurface {
+        width: sw,
+        height: sh,
+        data: data.to_vec(),
+    })
+}
+
+pub fn dimensions_label_position(selection: Rect, label_size: Size, output_size: Size) -> Point {
+    let x = (selection.x + selection.width / 2 - label_size.width / 2)
+        .max(0)
+        .min(output_size.width - label_size.width);
+    let above = selection.y - label_size.height - DIMENSIONS_GAP;
+    let y = if above >= 0 {
+        above
+    } else {
+        selection.y + selection.height + DIMENSIONS_GAP
+    };
+    Point::new(x, y.max(0).min(output_size.height - label_size.height))
+}
+
+pub fn paint_dimensions(
+    cr: &Context,
+    label: &PixelSurface,
+    selection: Rect,
+    output_size: Size,
+) -> Result<()> {
+    let pos = dimensions_label_position(
+        selection,
+        Size::new(label.width, label.height),
+        output_size,
+    );
+    let mut surface = ImageSurface::create(Format::ARgb32, label.width, label.height)?;
+    {
+        let mut data = surface.data()?;
+        data.copy_from_slice(&label.data);
+    }
+    cr.save()?;
+    cr.set_source_surface(&surface, pos.x as f64, pos.y as f64)?;
+    cr.paint()?;
+    cr.restore()?;
+    Ok(())
+}
+
 pub fn capture_button_hit(panel_rect: Rect, point: Point) -> bool {
     let radius = RADIUS - 2;
     let xc = panel_rect.x + PADDING + radius;
@@ -309,5 +411,34 @@ mod tests {
             .data()
             .expect("surface data should be accessible after painting");
         assert!(!data.is_empty());
+    }
+
+    #[test]
+    fn dimensions_label_renders_non_empty() {
+        let theme = Theme::default();
+        let label = render_dimensions_label(1920, 1080, &theme).expect("label should render");
+        assert!(label.width > 0);
+        assert!(label.height > 0);
+        assert!(label.width <= DIMENSIONS_MAX_WIDTH);
+        assert!(label.height <= DIMENSIONS_MAX_HEIGHT);
+        assert!(!label.data.is_empty());
+    }
+
+    #[test]
+    fn dimensions_label_positioned_above_when_space() {
+        let sel = Rect::new(100, 200, 400, 300);
+        let label_size = Size::new(120, 30);
+        let output_size = Size::new(1920, 1080);
+        let pos = dimensions_label_position(sel, label_size, output_size);
+        assert!(pos.y < sel.y);
+    }
+
+    #[test]
+    fn dimensions_label_positioned_below_when_no_space_above() {
+        let sel = Rect::new(100, 5, 400, 300);
+        let label_size = Size::new(120, 30);
+        let output_size = Size::new(1920, 1080);
+        let pos = dimensions_label_position(sel, label_size, output_size);
+        assert!(pos.y >= sel.y + sel.height);
     }
 }

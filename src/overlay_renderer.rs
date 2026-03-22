@@ -16,8 +16,9 @@ use wgpu::util::DeviceExt;
 use crate::{
     geometry::{Rect, Size},
     render::{
-        HANDLE_SIZE, PanelAssets, PixelSurface, paint_background, paint_masks_and_border,
-        paint_panel, panel_location,
+        DIMENSIONS_MAX_HEIGHT, DIMENSIONS_MAX_WIDTH, HANDLE_SIZE, PanelAssets, PixelSurface,
+        dimensions_label_position, paint_background, paint_dimensions, paint_masks_and_border,
+        paint_panel, panel_location, render_dimensions_label,
     },
     state::SelectionModel,
     theme::Theme,
@@ -163,6 +164,11 @@ impl ShmRenderer {
                 };
                 let _panel_rect =
                     paint_panel(&cr, panel, output.logical_size, model.dragging_selection())?;
+
+                if let Some(sel) = model.selection_on_output(index) {
+                    let label = render_dimensions_label(sel.width, sel.height, &self.theme)?;
+                    paint_dimensions(&cr, &label, sel, output.logical_size)?;
+                }
             }
 
             surface.flush();
@@ -192,6 +198,8 @@ pub(crate) struct WgpuRenderer {
     solid_pipeline: wgpu::RenderPipeline,
     panel_show: GpuTexture,
     panel_hide: GpuTexture,
+    dimensions_texture: wgpu::Texture,
+    _dimensions_texture_view: wgpu::TextureView,
     outputs: Vec<GpuOutput>,
     theme: Theme,
 }
@@ -208,6 +216,7 @@ struct GpuOutput {
     without_pointer_bind_group: wgpu::BindGroup,
     panel_show_bind_group: wgpu::BindGroup,
     panel_hide_bind_group: wgpu::BindGroup,
+    dimensions_bind_group: wgpu::BindGroup,
     textured_instances: wgpu::Buffer,
     solid_instances: wgpu::Buffer,
     _with_pointer_texture: GpuTexture,
@@ -364,6 +373,23 @@ impl WgpuRenderer {
         let panel_show = upload_texture(&device, &queue, &panels.show_pointer, "panel-show")?;
         let panel_hide = upload_texture(&device, &queue, &panels.hide_pointer, "panel-hide")?;
 
+        let dimensions_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("snappers-dimensions-texture"),
+            size: wgpu::Extent3d {
+                width: DIMENSIONS_MAX_WIDTH as u32,
+                height: DIMENSIONS_MAX_HEIGHT as u32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let dimensions_texture_view =
+            dimensions_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         let surface_format = choose_surface_format(
             &gpu_outputs
                 .first()
@@ -442,10 +468,18 @@ impl WgpuRenderer {
                     &output_uniform,
                     "snappers-panel-hide-bind-group",
                 );
+                let dimensions_bind_group = create_textured_bind_group(
+                    &device,
+                    &textured_bind_group_layout,
+                    &dimensions_texture_view,
+                    &sampler,
+                    &output_uniform,
+                    "snappers-dimensions-bind-group",
+                );
 
                 let textured_instances = device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("snappers-textured-instances"),
-                    size: (2 * mem::size_of::<TexturedInstance>()) as u64,
+                    size: (3 * mem::size_of::<TexturedInstance>()) as u64,
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
@@ -468,6 +502,7 @@ impl WgpuRenderer {
                     without_pointer_bind_group,
                     panel_show_bind_group,
                     panel_hide_bind_group,
+                    dimensions_bind_group,
                     textured_instances,
                     solid_instances,
                     _with_pointer_texture: with_pointer_texture,
@@ -484,6 +519,8 @@ impl WgpuRenderer {
             solid_pipeline,
             panel_show,
             panel_hide,
+            dimensions_texture,
+            _dimensions_texture_view: dimensions_texture_view,
             outputs,
             theme,
         })
@@ -529,19 +566,60 @@ impl WgpuRenderer {
         } else {
             &self.panel_show
         };
-        let textured_instances = textured_instances(
+
+        let selection = model.selection_on_output(index);
+        let dimensions_instance = if let Some(sel) = selection {
+            if let Ok(label) = render_dimensions_label(sel.width, sel.height, &self.theme) {
+                self.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.dimensions_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &label.data,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some((label.width.max(1) * 4) as u32),
+                        rows_per_image: Some(label.height.max(1) as u32),
+                    },
+                    wgpu::Extent3d {
+                        width: label.width.max(1) as u32,
+                        height: label.height.max(1) as u32,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                let label_size = Size::new(label.width, label.height);
+                let pos = dimensions_label_position(sel, label_size, output.logical_size);
+                Some(TexturedInstance {
+                    rect: rect_to_f32(Rect::new(pos.x, pos.y, label.width, label.height)),
+                    modulate: [1.0, 1.0, 1.0, 1.0],
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let tex_instances = textured_instances(
             output.logical_size,
             panel.size(),
             model.dragging_selection(),
         );
+        let dim_instance = dimensions_instance.unwrap_or(TexturedInstance {
+            rect: [0.0, 0.0, 0.0, 0.0],
+            modulate: [0.0, 0.0, 0.0, 0.0],
+        });
+        let all_textured = [tex_instances[0], tex_instances[1], dim_instance];
         self.queue.write_buffer(
             &output.textured_instances,
             0,
-            bytemuck::cast_slice(&textured_instances),
+            bytemuck::cast_slice(&all_textured),
         );
 
         let solid_instances =
-            solid_instances(output.logical_size, model.selection_on_output(index), &self.theme);
+            solid_instances(output.logical_size, selection, &self.theme);
         self.queue.write_buffer(
             &output.solid_instances,
             0,
@@ -575,6 +653,8 @@ impl WgpuRenderer {
             pass.set_vertex_buffer(0, self.quad_vertices.slice(..));
 
             pass.set_pipeline(&self.textured_pipeline);
+
+            // Screenshot background
             pass.set_vertex_buffer(
                 1,
                 output
@@ -589,6 +669,7 @@ impl WgpuRenderer {
             pass.set_bind_group(0, screenshot_bind_group, &[]);
             pass.draw(0..6, 0..1);
 
+            // Panel
             pass.set_vertex_buffer(
                 1,
                 output.textured_instances.slice(
@@ -604,6 +685,7 @@ impl WgpuRenderer {
             pass.set_bind_group(0, panel_bind_group, &[]);
             pass.draw(0..6, 0..1);
 
+            // Solid instances (dim mask, selection border, corner handles)
             if !solid_instances.is_empty() {
                 pass.set_pipeline(&self.solid_pipeline);
                 pass.set_vertex_buffer(
@@ -614,6 +696,20 @@ impl WgpuRenderer {
                 );
                 pass.set_bind_group(0, &output.solid_bind_group, &[]);
                 pass.draw(0..6, 0..solid_instances.len() as u32);
+            }
+
+            // Dimensions label
+            if dimensions_instance.is_some() {
+                pass.set_pipeline(&self.textured_pipeline);
+                pass.set_vertex_buffer(
+                    1,
+                    output.textured_instances.slice(
+                        (2 * mem::size_of::<TexturedInstance>()) as u64
+                            ..(3 * mem::size_of::<TexturedInstance>()) as u64,
+                    ),
+                );
+                pass.set_bind_group(0, &output.dimensions_bind_group, &[]);
+                pass.draw(0..6, 0..1);
             }
         }
 
