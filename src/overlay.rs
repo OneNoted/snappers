@@ -77,6 +77,7 @@ pub fn select_region(
         touch: None,
         modifiers: Modifiers::default(),
         exit: None,
+        dirty: true,
         snapshot,
         config,
     };
@@ -146,7 +147,7 @@ pub fn select_region(
 
     while app.exit.is_none() {
         event_queue.blocking_dispatch(&mut app)?;
-        if app.overlays.iter().all(|surface| surface.configured) {
+        if app.dirty && app.overlays.iter().all(|surface| surface.configured) {
             app.draw_all(&qh)?;
         }
     }
@@ -176,12 +177,13 @@ struct OverlayApp {
     touch: Option<wl_touch::WlTouch>,
     modifiers: Modifiers,
     exit: Option<Option<OverlayResult>>,
+    dirty: bool,
     snapshot: CaptureSnapshot,
     config: AppConfig,
 }
 
 impl OverlayApp {
-    fn draw_all(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
+    fn draw_all(&mut self, _qh: &QueueHandle<Self>) -> Result<()> {
         let Some(model) = self.model.as_ref() else {
             return Ok(());
         };
@@ -228,16 +230,13 @@ impl OverlayApp {
                 .layer
                 .wl_surface()
                 .damage_buffer(0, 0, width as i32, height as i32);
-            overlay
-                .layer
-                .wl_surface()
-                .frame(qh, overlay.layer.wl_surface().clone());
             buffer
                 .attach_to(overlay.layer.wl_surface())
                 .context("failed to attach overlay buffer")?;
             overlay.layer.commit();
         }
 
+        self.dirty = false;
         Ok(())
     }
 
@@ -258,6 +257,7 @@ impl OverlayApp {
         }
         if matches_binding(&keymap.toggle_pointer, keysym, self.modifiers) {
             model.toggle_pointer();
+            self.dirty = true;
             return;
         }
         if matches_binding(&keymap.copy_only, keysym, self.modifiers) {
@@ -280,47 +280,58 @@ impl OverlayApp {
         }
         if matches_binding(&keymap.move_left, keysym, self.modifiers) {
             model.move_left();
+            self.dirty = true;
             return;
         }
         if matches_binding(&keymap.move_right, keysym, self.modifiers) {
             model.move_right();
+            self.dirty = true;
             return;
         }
         if matches_binding(&keymap.move_up, keysym, self.modifiers) {
             model.move_up();
+            self.dirty = true;
             return;
         }
         if matches_binding(&keymap.move_down, keysym, self.modifiers) {
             model.move_down();
+            self.dirty = true;
             return;
         }
         if matches_binding(&keymap.resize_left, keysym, self.modifiers) {
             model.resize_left();
+            self.dirty = true;
             return;
         }
         if matches_binding(&keymap.resize_right, keysym, self.modifiers) {
             model.resize_right();
+            self.dirty = true;
             return;
         }
         if matches_binding(&keymap.resize_up, keysym, self.modifiers) {
             model.resize_up();
+            self.dirty = true;
             return;
         }
         if matches_binding(&keymap.resize_down, keysym, self.modifiers) {
             model.resize_down();
+            self.dirty = true;
             return;
         }
         if matches_binding(&keymap.next_output, keysym, self.modifiers) {
             model.cycle_output(1);
+            self.dirty = true;
             return;
         }
         if matches_binding(&keymap.previous_output, keysym, self.modifiers) {
             model.cycle_output(-1);
+            self.dirty = true;
             return;
         }
 
         if keysym == smithay_client_toolkit::seat::keyboard::Keysym::space {
             model.set_move_mode(true);
+            self.dirty = true;
         }
     }
 
@@ -339,7 +350,7 @@ impl OverlayApp {
         let over_button = capture_button_hit(panel_rect, point);
         match model.pointer_up(overlay_index, point, over_button) {
             PointerUpOutcome::None => {}
-            PointerUpOutcome::Redraw => {}
+            PointerUpOutcome::Redraw => self.dirty = true,
             PointerUpOutcome::Confirm => {
                 self.exit = Some(Some(OverlayResult {
                     region: model.capture_region(),
@@ -478,6 +489,7 @@ impl LayerShellHandler for OverlayApp {
                     as i32,
             );
             surface.configured = true;
+            self.dirty = true;
         }
     }
 }
@@ -590,6 +602,7 @@ impl KeyboardHandler for OverlayApp {
         if event.keysym == smithay_client_toolkit::seat::keyboard::Keysym::space {
             if let Some(model) = self.model.as_mut() {
                 model.set_move_mode(false);
+                self.dirty = true;
             }
         }
     }
@@ -629,7 +642,9 @@ impl PointerHandler for OverlayApp {
             match event.kind {
                 PointerEventKind::Motion { .. } => {
                     if let Some(model) = self.model.as_mut() {
-                        let _ = model.pointer_motion(index, point);
+                        if model.pointer_motion(index, point) {
+                            self.dirty = true;
+                        }
                     }
                 }
                 PointerEventKind::Press { button, .. } => {
@@ -644,7 +659,9 @@ impl PointerHandler for OverlayApp {
                                 },
                             );
                             let over_button = capture_button_hit(panel_rect, point);
-                            let _ = model.pointer_down(index, point, over_button);
+                            if model.pointer_down(index, point, over_button) {
+                                self.dirty = true;
+                            }
                         }
                     }
                 }
@@ -689,7 +706,9 @@ impl TouchHandler for OverlayApp {
                 },
             );
             let over_button = capture_button_hit(panel_rect, point);
-            let _ = model.pointer_down(index, point, over_button);
+            if model.pointer_down(index, point, over_button) {
+                self.dirty = true;
+            }
         }
     }
 
@@ -715,7 +734,9 @@ impl TouchHandler for OverlayApp {
     ) {
         if let Some(model) = self.model.as_mut() {
             let index = model.selected_output_index();
-            let _ = model.pointer_motion(index, point_from_position(position));
+            if model.pointer_motion(index, point_from_position(position)) {
+                self.dirty = true;
+            }
         }
     }
 
