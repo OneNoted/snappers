@@ -188,3 +188,85 @@ fn region_to_logical(rect: Rect) -> LogicalRegion {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use image::{DynamicImage, Rgba, RgbaImage};
+
+    use super::*;
+
+    fn image(color: [u8; 4]) -> DynamicImage {
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(2, 2, Rgba(color)))
+    }
+
+    fn output(
+        name: &str,
+        with_pointer: DynamicImage,
+        without_pointer: DynamicImage,
+    ) -> CaptureOutput {
+        CaptureOutput {
+            name: name.to_owned(),
+            logical_rect: Rect::new(0, 0, 100, 100),
+            screenshot_with_pointer: with_pointer,
+            screenshot_without_pointer: without_pointer,
+        }
+    }
+
+    #[test]
+    fn detects_single_output_under_pointer() {
+        let unchanged = image([10, 20, 30, 255]);
+        let outputs = vec![
+            output("HDMI-A-1", unchanged.clone(), unchanged),
+            output("DP-1", image([255, 0, 0, 255]), image([0, 0, 0, 255])),
+        ];
+
+        let selected = detect_output_under_pointer(&outputs).expect("pointer output");
+
+        assert_eq!(selected.name, "DP-1");
+    }
+
+    #[test]
+    fn errors_when_no_output_differs() {
+        let unchanged = image([10, 20, 30, 255]);
+        let outputs = vec![output("HDMI-A-1", unchanged.clone(), unchanged)];
+
+        let err = detect_output_under_pointer(&outputs).expect_err("no output should match");
+
+        assert!(err.to_string().contains("pass `--output` explicitly"));
+    }
+
+    #[test]
+    fn errors_when_multiple_outputs_differ() {
+        let outputs = vec![
+            output("HDMI-A-1", image([255, 0, 0, 255]), image([0, 0, 0, 255])),
+            output("DP-1", image([0, 255, 0, 255]), image([0, 0, 0, 255])),
+        ];
+
+        let err = detect_output_under_pointer(&outputs).expect_err("ambiguous pointer output");
+        let message = err.to_string();
+
+        assert!(message.contains("HDMI-A-1"));
+        assert!(message.contains("DP-1"));
+        assert!(message.contains("pass `--output` explicitly"));
+    }
+
+    #[test]
+    fn screenshot_variant_uses_requested_pointer_visibility() {
+        let output = output("DP-1", image([255, 0, 0, 255]), image([0, 255, 0, 255]));
+
+        assert_eq!(
+            screenshot_variant(&output, true)
+                .to_rgba8()
+                .get_pixel(0, 0)
+                .0,
+            [255, 0, 0, 255]
+        );
+        assert_eq!(
+            screenshot_variant(&output, false)
+                .to_rgba8()
+                .get_pixel(0, 0)
+                .0,
+            [0, 255, 0, 255]
+        );
+    }
+}
