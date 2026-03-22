@@ -7,10 +7,13 @@ use directories::{ProjectDirs, UserDirs};
 use serde::Deserialize;
 use smithay_client_toolkit::seat::keyboard::{Keysym, Modifiers};
 
+use crate::theme::Theme;
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub screenshot_path: Option<String>,
     pub keymap: Keymap,
+    pub theme: Theme,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +47,13 @@ pub struct KeyBinding {
 struct FileConfig {
     screenshot_path: Option<Option<String>>,
     keymap: Option<FileKeymap>,
+    theme: Option<FileThemeConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct FileThemeConfig {
+    name: Option<String>,
+    flavor: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -81,11 +91,17 @@ impl AppConfig {
     fn from_file(file: FileConfig) -> Result<Self> {
         let defaults = Keymap::default();
         let file_keymap = file.keymap.unwrap_or_default();
+        let file_theme = file.theme.unwrap_or_default();
+        let theme = crate::theme::resolve_theme(
+            file_theme.name.as_deref(),
+            file_theme.flavor.as_deref(),
+        )?;
 
         Ok(Self {
             screenshot_path: file
                 .screenshot_path
                 .unwrap_or_else(|| Some(default_screenshot_pattern())),
+            theme,
             keymap: Keymap {
                 confirm: parse_bindings(file_keymap.confirm, defaults.confirm)?,
                 copy_only: parse_bindings(file_keymap.copy_only, defaults.copy_only)?,
@@ -131,6 +147,7 @@ impl Default for AppConfig {
         Self {
             screenshot_path: Some(default_screenshot_pattern()),
             keymap: Keymap::default(),
+            theme: Theme::default(),
         }
     }
 }

@@ -8,6 +8,7 @@ mod overlay_renderer;
 mod render;
 mod save;
 mod state;
+mod theme;
 
 use anyhow::{Context, Result};
 use clap::Parser;
