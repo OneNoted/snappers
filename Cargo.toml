@@ -7,6 +7,7 @@ readme = "README.md"
 documentation = "https://docs.rs/snappers"
 homepage = "https://github.com/OneNoted/snappers"
 repository = "https://github.com/OneNoted/snappers"
+license = "MIT"
 keywords = ["wayland", "screenshot", "wlroots"]
 categories = ["command-line-utilities"]
 
