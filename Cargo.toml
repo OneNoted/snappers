@@ -2,6 +2,11 @@
 name = "snappers"
 version = "0.1.0"
 edition = "2024"
+description = "Standalone Wayland screenshot tool with a niri-style selection UI"
+readme = "README.md"
+documentation = "https://docs.rs/snappers"
+keywords = ["wayland", "screenshot", "wlroots"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.100"

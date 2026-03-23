@@ -23,6 +23,20 @@ It currently provides:
 cargo build --release
 ```
 
+## Install
+
+From source:
+
+```bash
+cargo install --path .
+```
+
+Release binary:
+
+```bash
+./target/release/snappers
+```
+
 ## Commands
 
 ```bash
@@ -75,3 +89,5 @@ Useful checks:
 cargo test --quiet
 cargo check --quiet
 ```
+
+Release notes live in `CHANGELOG.md`.
