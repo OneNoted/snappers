@@ -5,6 +5,8 @@ edition = "2024"
 description = "Standalone Wayland screenshot tool with a niri-style selection UI"
 readme = "README.md"
 documentation = "https://docs.rs/snappers"
+homepage = "https://github.com/OneNoted/snappers"
+repository = "https://github.com/OneNoted/snappers"
 keywords = ["wayland", "screenshot", "wlroots"]
 categories = ["command-line-utilities"]
 
