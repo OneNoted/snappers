@@ -2,6 +2,9 @@
 
 `snappers` is a standalone Wayland screenshot tool that aims to reproduce niri's built-in screenshot UI as a normal client application.
 
+- Crate: <https://crates.io/crates/snappers>
+- Repository: <https://github.com/OneNoted/snappers>
+
 It currently provides:
 
 - `snappers area` for the interactive region picker
@@ -17,23 +20,24 @@ It currently provides:
 - screencopy support exposed through `libwayshot`
 - a working Wayland clipboard path
 
-## Build
-
-```bash
-cargo build --release
-```
-
 ## Install
 
-From source:
+From crates.io:
+
+```bash
+cargo install snappers
+```
+
+From a local checkout:
 
 ```bash
 cargo install --path .
 ```
 
-Release binary:
+Build without installing:
 
 ```bash
+cargo build --release
 ./target/release/snappers
 ```
 
